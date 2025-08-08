@@ -4,7 +4,11 @@ on:
   schedule:
     - cron: "20 20 * * *"
   workflow_dispatch:
-
+    inputs:
+      force_run:
+        description: '强制运行'
+        required: true
+        type: boolean
 jobs:
   Download_video_and_generate_subtitle:
     runs-on: ubuntu-latest
@@ -41,6 +45,7 @@ jobs:
         CLOUDFLARE_USER_ID: ${{ secrets.CLOUDFLARE_USER_ID }}
         CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
         FINGERPRINT: ${{ secrets.FINGERPRINT }}
+        FORCE_RUN: ${{ inputs.force_run }} 
 
     - name: 获取当前日期
       if: steps.python.outcome == 'success'

@@ -1,3 +1,4 @@
+from multiprocessing.context import ForkContext
 import requests
 import json
 import re
@@ -200,11 +201,14 @@ def convert_words_to_srt(segments: list) -> str:
 
 
 if __name__ == "__main__":
+    force_run = bool(os.getenv("FORCE_RUN"))
+    print("强制运行： ",force_run)
     # 判断是否为东8区的星期天早上4点
-    now = datetime.now(timezone(timedelta(hours=8)))
-    if not (now.weekday() == 6 and now.hour == 21):
-        print("当前时间不是东8区的星期天早上4点，跳过运行")
-        exit(1)
+    if not force_run:
+        now = datetime.now(timezone(timedelta(hours=8)))
+        if not (now.weekday() == 6 and now.hour == 21):
+            print("当前时间不是东8区的星期天早上4点，跳过运行")
+            exit(1)
     
     print("正在请求CCTV的API...")
     data = get_cctv_news_weekly()
