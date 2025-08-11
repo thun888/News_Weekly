@@ -57,7 +57,7 @@ jobs:
       uses: actions/create-release@v1
       with:
         tag_name: ${{ env.DATE }}
-        release_name: 新闻周刊（${{ env.DATE }}）
+        release_name: ${{ env.DATE }}
         draft: false
         prerelease: false
       env:

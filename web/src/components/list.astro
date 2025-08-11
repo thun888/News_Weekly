@@ -1,0 +1,34 @@
+---
+import Welcome from "../components/list.astro";
+import Layout from "../layouts/Layout.astro";
+const token = process.env.GITHUB_TOKEN;
+
+const res = await fetch(
+  "https://api.github.com/repos/thun888/News_Weekly/releases",
+  {
+    headers: {
+      Authorization: `token ${token}`,
+    },
+  },
+);
+const data = await res.json();
+---
+
+{
+  data.map((item: any) => (
+    <>
+      <div class="card">
+        <div class="card-header">
+          <h3>{item.name}</h3>
+          <div class="info">
+            {item.assets.map((file: any) => (
+              <a href={file.browser_download_url} class="file-link">
+                {file.name}
+              </a>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  ))
+}
