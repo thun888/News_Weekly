@@ -2,3 +2,5 @@ __pycache__
 downloads
 sub_output
 vod.worker.js
+response.json
+release_info.txt

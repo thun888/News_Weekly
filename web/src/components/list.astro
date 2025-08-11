@@ -19,6 +19,7 @@ const data = await res.json();
         <div class="card-header">
           <h3>{item.name}</h3>
           <div class="info">
+            <a href={item.html_url} class="file-link">查看细节</a>
             {item.assets.map((file: any) => (
               <a href={file.browser_download_url} class="file-link">
                 {file.name}

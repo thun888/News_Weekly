@@ -58,6 +58,7 @@ jobs:
       with:
         tag_name: ${{ env.DATE }}
         release_name: ${{ env.DATE }}
+        body_path: release_info.txt
         draft: false
         prerelease: false
       env:
