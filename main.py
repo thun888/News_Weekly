@@ -1,4 +1,3 @@
-from multiprocessing.context import ForkContext
 import requests
 import json
 import re
@@ -88,6 +87,8 @@ def get_video_info(video_guid):
     获取视频信息
     """
     fingerprint = os.getenv("FINGERPRINT")
+    if not fingerprint:
+        fingerprint = "ABCD"
     vtoken = generate_vtoken(fingerprint)
     # https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid=98818820526f4fad8eb896022ad4b6b7&client=flash&im=0&tsp=1754358909&vn=2049&vc=7BA8ACCDA118481B230086E6730A49A6&uid=AB2BCC96F1DA979C99C5C4212F93172C&wlan=
     url = f"https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do"
@@ -102,8 +103,11 @@ def get_video_info(video_guid):
         'wlan': ''
     }
     response = requests.get(url, params=params)
-    # print(response.json())
+    with open("response.json", "w", encoding="utf-8") as f:
+        f.write(response.text)
     title = response.json()['title']
+    segments = response.json()['segments']
+    tag = response.json()['tag']
     target_url = response.json()['manifest']['hls_enc_url']
     target_url_response = requests.get(target_url)
     # print(target_url_response.text)
@@ -124,7 +128,7 @@ def get_video_info(video_guid):
     # print(target_host)
     # https://hls.cntv.lxdns.com/asp/hls/450/0303000a/3/default/32209ab71a794674ab965ae7b6ff1d7e/450.m3u8
     url = "https://" + target_host + target_url_response.text.split('\n')[2].replace("/enc","")
-    return url, title
+    return url, title, segments, tag
 
 def get_sub_from_ai(path: str) -> bool:
     """从AI获取字幕
@@ -214,9 +218,20 @@ if __name__ == "__main__":
     data = get_cctv_news_weekly()
     latest_video_guid = data['data']['list'][0]['guid']
     print(f"最新视频ID: {latest_video_guid}")
-    video_url, title = get_video_info(latest_video_guid)
+    video_url, title,segments, tag = get_video_info(latest_video_guid)
     print(f"视频URL: {video_url}")
     print(f"视频标题: {title}")
+
+    # 写入提交信息
+    with open("release_info.txt", "w", encoding="utf-8") as f:
+        f.write(f"=================\n")
+        f.write(f"视频标题: {title}\n")
+        f.write(f"视频标签: {tag}\n")
+        f.write(f"=================\n")
+        f.write(f"视频内容如下\n")
+        for segment in segments:
+            f.write(f"{segment["title"]}\n")
+        f.write(f"=================\n")
 
     # 创建下载器实例
     downloader = M3U8Downloader(
