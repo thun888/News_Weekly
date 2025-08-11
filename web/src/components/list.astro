@@ -21,7 +21,7 @@ const data = await res.json();
           <div class="info">
             <a href={item.html_url} class="file-link">查看细节</a>
             {item.assets.map((file: any) => (
-              <a href={file.browser_download_url} class="file-link">
+              <a href={`https://cf-proxy-news-weekly.hzchu.top/${file.browser_download_url}`} class="file-link">
                 {file.name}
               </a>
             ))}
