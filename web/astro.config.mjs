@@ -1,9 +1,14 @@
-// @ts-check
 import { defineConfig } from 'astro/config';
-
+// Also can be @astrojs/vercel/static
 import vercel from '@astrojs/vercel';
-
-// https://astro.build/config
+ 
 export default defineConfig({
-  adapter: vercel()
+  // Also can be 'static' or 'hybrid'
+  output: 'server',
+  adapter: vercel({
+    webAnalytics: {
+      enabled: true,
+    },
+    maxDuration: 8,
+  }),
 });

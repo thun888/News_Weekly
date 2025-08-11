@@ -51,3 +51,13 @@ h3 {
 .file-link:hover {
   color: #005fa3;
 }
+
+a {
+  color: #000;
+  text-decoration: none;
+}
+
+a:hover {
+  color: #555;
+  text-decoration: underline;
+}
