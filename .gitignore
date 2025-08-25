@@ -4,3 +4,5 @@ sub_output
 vod.worker.js
 response.json
 release_info.txt
+passed.json
+time.txt

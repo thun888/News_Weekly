@@ -37,9 +37,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Restore passed.json from gist
+      run: |
+        python gist.py --restore --token ${{ secrets.GH_TOKEN }} --id ${{ secrets.GIST_ID }} --owner ${{ github.repository_owner }}
+
     - name: Run Python script
       id: python
-      continue-on-error: true 
       run: python main.py
       env:
         CLOUDFLARE_USER_ID: ${{ secrets.CLOUDFLARE_USER_ID }}
@@ -47,12 +50,21 @@ jobs:
         FINGERPRINT: ${{ secrets.FINGERPRINT }}
         FORCE_RUN: ${{ inputs.force_run }} 
 
+    - name: 获取状态
+      id: get_status
+      run: |
+        if [ -f "status.txt" ]; then
+          echo "::set-output name=STATUS::$(cat status.txt)"
+        else
+          echo "::set-output name=STATUS::false"
+        fi
+
     - name: 获取当前日期
-      if: steps.python.outcome == 'success'
-      run: echo "DATE=$(date +%Y-%m-%d)" >> $GITHUB_ENV
+      if: steps.get_status.outputs.STATUS == 'true'
+      run: echo "DATE=$(cat time.txt)" >> $GITHUB_ENV
 
     - name: Create Release
-      if: steps.python.outcome == 'success'
+      if: steps.get_status.outputs.STATUS == 'true'
       id: create_release
       uses: actions/create-release@v1
       with:
@@ -65,12 +77,12 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
     
     - name: Copy media
-      if: steps.python.outcome == 'success'
+      if: steps.get_status.outputs.STATUS == 'true'
       run: |
         cp downloads/*.mp4 sub_output/
 
     - name: Upload assets to Release
-      if: steps.python.outcome == 'success'
+      if: steps.get_status.outputs.STATUS == 'true'
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ env.DATE }}
@@ -78,7 +90,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
 
-
+    - name: Save passed.json to gist
+      run: |
+        python gist.py --save --token ${{ secrets.GH_TOKEN }} --id ${{ secrets.GIST_ID }} --owner ${{ github.repository_owner }}
 
 
 
