@@ -9,6 +9,7 @@ import os
 from audio_extractor import extract_audio_from_video
 import base64
 from moviepy.config import change_settings
+import os.path as path
 change_settings({"FFMPEG_BINARY": "/usr/bin/ffmpeg"}) 
 
 def get_cctv_news_weekly():
@@ -204,20 +205,44 @@ def convert_words_to_srt(segments: list) -> str:
     return "\n".join(lines)
 
 
+def read_passed_file():
+    with open(passed_file, 'r', encoding='utf-8') as fp:
+        return json.load(fp)
+
+def write_passed_file(data):
+    with open(passed_file, 'w', encoding='utf-8') as fp:
+        json.dump(data, fp)
+
 if __name__ == "__main__":
-    force_run = bool(os.getenv("FORCE_RUN"))
-    print("强制运行： ",force_run)
-    # 判断是否为东8区的星期天早上4点
-    if not force_run:
-        now = datetime.now(timezone(timedelta(hours=8)))
-        if not (now.weekday() == 6 and now.hour == 21):
-            print("当前时间不是东8区的星期天早上4点，跳过运行")
-            exit(1)
+    if os.getenv("FORCE_RUN") == "true":
+        force_run = True
+    else:
+        force_run = False
+    print("强制运行： ", force_run)
+    # 判断是否已获取过
+    
+    passed_file = path.join(path.dirname(__file__), 'passed.json')
+
+    passed = {'latest_video_guid': ''}
+    if not path.exists(passed_file):
+        write_passed_file(passed)
+    else:
+        passed = read_passed_file()
+
+    print('passed: ', passed)
+
     
     print("正在请求CCTV的API...")
     data = get_cctv_news_weekly()
     latest_video_guid = data['data']['list'][0]['guid']
     print(f"最新视频ID: {latest_video_guid}")
+
+    if latest_video_guid == passed['latest_video_guid'] and not force_run:
+        print("已获取过，跳过")
+        with open("status.txt", "w", encoding="utf-8") as f:
+            f.write("false")
+        exit(0)
+
     video_url, title,segments, tag = get_video_info(latest_video_guid)
     print(f"视频URL: {video_url}")
     print(f"视频标题: {title}")
@@ -232,6 +257,10 @@ if __name__ == "__main__":
         for segment in segments:
             f.write(f"- {segment["title"]}\n\n")
         f.write(f"---\n\n")
+
+    time_tag = title.split(' ')[1]
+    with open("time.txt", "w", encoding="utf-8") as f:
+        f.write(time_tag)
 
     # 创建下载器实例
     downloader = M3U8Downloader(
@@ -286,6 +315,11 @@ if __name__ == "__main__":
         else:
             print("字幕生成失败！")
 
+    # 保存到passed.json
+    passed['latest_video_guid'] = latest_video_guid
+    write_passed_file(passed)
+    with open("status.txt", "w", encoding="utf-8") as f:
+        f.write("true")
 
     
     
