@@ -1,4 +1,4 @@
-# News_Daily
+# News_Weekly
 
 **央视网，新闻周刊，字幕文件**
 
