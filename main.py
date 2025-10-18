@@ -107,7 +107,7 @@ def get_video_info(video_guid):
     with open("response.json", "w", encoding="utf-8") as f:
         f.write(response.text)
     title = response.json()['title']
-    segments = response.json()['segments']
+    segments = response.json().get('segments', [])
     tag = response.json()['tag']
     target_url = response.json()['manifest']['hls_enc_url']
     target_url_response = requests.get(target_url)
