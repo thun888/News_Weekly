@@ -2,7 +2,7 @@ name: 下载视频并生成字幕
 
 on:
   schedule:
-    - cron: "0,20,40 16,17,18,19,20 * * *"
+    - cron: "30 16,17,18,19,20 * * *"
   workflow_dispatch:
     inputs:
       force_run:
