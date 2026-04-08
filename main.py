@@ -223,7 +223,7 @@ if __name__ == "__main__":
     
     passed_file = path.join(path.dirname(__file__), 'passed.json')
 
-    passed = {'latest_video_guid': ''}
+    passed = {'video_title': ''}
     if not path.exists(passed_file):
         write_passed_file(passed)
     else:
@@ -235,17 +235,18 @@ if __name__ == "__main__":
     print("正在请求CCTV的API...")
     data = get_cctv_news_weekly()
     latest_video_guid = data['data']['list'][0]['guid']
-    print(f"最新视频ID: {latest_video_guid}")
 
-    if latest_video_guid == passed['latest_video_guid'] and not force_run:
-        print("已获取过，跳过")
-        with open("status.txt", "w", encoding="utf-8") as f:
-            f.write("false")
-        exit(0)
+
 
     video_url, title,segments, tag = get_video_info(latest_video_guid)
     print(f"视频URL: {video_url}")
     print(f"视频标题: {title}")
+
+    if title == passed['video_title'] and not force_run:
+        print("已获取过，跳过")
+        with open("status.txt", "w", encoding="utf-8") as f:
+            f.write("false")
+        exit(0)
 
     # 写入提交信息
     with open("release_info.txt", "w", encoding="utf-8") as f:
@@ -308,15 +309,18 @@ if __name__ == "__main__":
     print("=" * 50)
     print("开始生成字幕...")
     status = False
-    while not status:
+    total_try_times = 10
+    while not status and total_try_times > 0:
         status = get_sub_from_ai(audio_path)
         if status:
             print("字幕生成完成！")
         else:
             print("字幕生成失败！")
-
+            total_try_times -= 1
+            print(f"正在重试... 剩余尝试次数: {total_try_times}")
+            time.sleep(300)
     # 保存到passed.json
-    passed['latest_video_guid'] = latest_video_guid
+    passed['video_title'] = title
     write_passed_file(passed)
     with open("status.txt", "w", encoding="utf-8") as f:
         f.write("true")
