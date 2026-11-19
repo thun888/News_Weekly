@@ -23,7 +23,8 @@ class M3U8Downloader:
         self.retry_times = retry_times
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://tv.cctv.com/'
         })
         
     def download_m3u8(self, m3u8_url, output_dir="downloads", filename=None):
@@ -83,7 +84,14 @@ class M3U8Downloader:
             try:
                 response = self.session.get(url, timeout=self.timeout)
                 response.raise_for_status()
-                return response.text
+                content = response.text.lstrip("\ufeff").strip()
+                if not content.startswith("#EXTM3U"):
+                    raise ValueError(
+                        f"返回内容不是m3u8: {content[:100].replace(chr(10), ' ')!r}"
+                    )
+                if "#EXT-X-STREAM-INF" in content:
+                    raise ValueError("这是master playlist，请先在调用方解析出媒体播放列表")
+                return content
             except Exception as e:
                 print(f"获取m3u8内容失败 (尝试 {i+1}/{self.retry_times}): {e}")
                 if i < self.retry_times - 1:
@@ -92,6 +100,10 @@ class M3U8Downloader:
     
     def _parse_m3u8(self, base_url, content):
         """解析m3u8文件，提取ts片段URL"""
+        if "#EXT-X-KEY" in content and "METHOD=NONE" not in content:
+            print("该m3u8使用了加密，当前下载器只支持未加密流")
+            return []
+
         ts_urls = []
         lines = content.strip().split('\n')
         
@@ -119,6 +131,7 @@ class M3U8Downloader:
         """并发下载ts片段"""
         ts_files = []
         total = len(ts_urls)
+        failed = 0
         
         print(f"开始下载 {total} 个ts片段...")
         
@@ -137,12 +150,19 @@ class M3U8Downloader:
                     ts_file = future.result()
                     if ts_file:
                         ts_files.append(ts_file)
+                    else:
+                        failed += 1
                     completed += 1
                     print(f"进度: {completed}/{total} ({completed/total*100:.1f}%)")
                 except Exception as e:
-                    print(f"下载失败 {url}: {e}")
+                    failed += 1
                     completed += 1
-                    
+                    print(f"下载失败 {url}: {e}")
+
+        if failed:
+            print(f"有 {failed}/{total} 个ts片段下载失败，为避免生成损坏的视频，本次下载终止")
+            return None
+
         return sorted(ts_files, key=lambda x: int(x.split('_')[-1].split('.')[0]))
     
     def _download_single_ts(self, url, output_dir, index):
@@ -151,6 +171,13 @@ class M3U8Downloader:
             try:
                 response = self.session.get(url, timeout=self.timeout)
                 response.raise_for_status()
+
+                if not response.content:
+                    raise ValueError("返回内容为空")
+                content_type = response.headers.get('content-type', '')
+                if 'html' in content_type.lower():
+                    snippet = response.text[:100].replace('\n', ' ')
+                    raise ValueError(f"返回了HTML页面: {snippet!r}")
                 
                 # 保存ts文件
                 ts_filename = f"segment_{index:06d}.ts"
@@ -180,10 +207,15 @@ class M3U8Downloader:
                     if os.path.exists(ts_file):
                         with open(ts_file, 'rb') as infile:
                             outfile.write(infile.read())
-                            
+
+            if os.path.getsize(output_path) == 0:
+                raise ValueError("合并后的文件为空")
+
             return True
         except Exception as e:
             print(f"合并文件失败: {e}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
             return False
     
     def _cleanup_ts_files(self, ts_files):

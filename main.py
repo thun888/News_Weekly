@@ -8,9 +8,37 @@ from m3u8_downloader import M3U8Downloader
 import os
 from audio_extractor import extract_audio_from_video
 import base64
+import shutil
+import sys
+from urllib.parse import urljoin, urlparse
 from moviepy.config import change_settings
 import os.path as path
-change_settings({"FFMPEG_BINARY": "/usr/bin/ffmpeg"}) 
+
+ffmpeg_binary = shutil.which("ffmpeg")
+if ffmpeg_binary:
+    change_settings({"FFMPEG_BINARY": ffmpeg_binary})
+
+CCTV_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://tv.cctv.com/",
+}
+
+QUALITY_ORDER = ("2000", "1200", "850", "450")
+
+# CCTV 的 CDN 域名会轮换，某些域名在部分网络环境（例如 GitHub Actions）不可用，
+# 这里保留几个可互相替换的通用 CDN 域名。
+FALLBACK_CDN_HOSTS = ("newcntv.qcloudcdn.com", "hls.cntv.lxdns.com")
+
+
+def cdn_host_variants(url: str) -> list:
+    """为同一个m3u8路径生成不同CDN域名的候选地址。"""
+    parsed = urlparse(url)
+    variants = [url]
+    for host in FALLBACK_CDN_HOSTS:
+        if parsed.netloc != host:
+            variants.append(parsed._replace(netloc=host).geturl())
+    return variants
 
 def get_cctv_news_weekly():
     """
@@ -83,6 +111,111 @@ def generate_vtoken(fingerprint: str) -> dict:
         "vtoken": vtoken
     }
 
+def fetch_m3u8(url: str, timeout: int = 30) -> str:
+    """
+    请求 m3u8 地址并确认返回的确实是播放列表，而不是防盗链/地区限制的 HTML 页面。
+    """
+    response = requests.get(url, headers=CCTV_HEADERS, timeout=timeout)
+    response.raise_for_status()
+    text = response.text.lstrip("\ufeff").strip()
+    if not text.startswith("#EXTM3U"):
+        snippet = text[:120].replace("\n", " ")
+        raise ValueError(f"返回内容不是m3u8（可能被防盗链或地区限制）: {snippet!r}")
+    return text
+
+def parse_variants(master_url: str, master_text: str) -> list:
+    """
+    从 master playlist 生成候选媒体播放列表地址。
+
+    CCTV 的 master 往往只列出一种清晰度（450），但只要路径符合
+    /asp/hls/<quality>/<...>/<quality>.m3u8 的模式，更高清晰度的文件也可以
+    直接请求到，因此先按 QUALITY_ORDER 的顺序生成各清晰度候选，
+    再补充 master 中实际列出的变体。
+    """
+    parsed = urlparse(master_url)
+    query = f"?{parsed.query}" if parsed.query else ""
+    candidates = []
+
+    match = re.match(r"^(.*?/)(\d+)/(.*/)(\d+)\.m3u8$", parsed.path)
+    if match:
+        prefix, _, middle, _ = match.groups()
+        for quality in QUALITY_ORDER:
+            candidates.append(
+                f"{parsed.scheme}://{parsed.netloc}{prefix}{quality}/{middle}{quality}.m3u8{query}"
+            )
+
+    for raw_line in master_text.splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("#"):
+            candidates.append(urljoin(master_url, line))
+
+    unique = []
+    for url in candidates:
+        if url not in unique:
+            unique.append(url)
+    return unique
+
+def unencrypted_candidates(url: str) -> list:
+    """
+    生成可尝试的播放列表地址：
+    1. 去掉 CCTV 的加密路径 (/asp/enc/hls -> /asp/hls)；
+    2. 尝试 2000/1200/850/450 各清晰度，优先高清；
+    3. 同一路径在多个 CDN 域名上重试。
+    """
+    normalized = url
+    for marker in ("/asp/enc2/hls/", "/asp/enc/hls/", "/asp/h5e/hls/"):
+        if marker in normalized:
+            normalized = normalized.replace(marker, "/asp/hls/", 1)
+            break
+
+    parsed = urlparse(normalized)
+    paths = []
+    match = re.match(r"^(.*?/)(\d+)/(.*/)(\d+)\.m3u8$", parsed.path)
+    if match:
+        prefix, _, middle, _ = match.groups()
+        for quality in QUALITY_ORDER:
+            paths.append(f"{prefix}{quality}/{middle}{quality}.m3u8")
+    paths.append(parsed.path)
+
+    # 去重并保持顺序
+    unique_candidates = []
+    for candidate_path in paths:
+        candidate_url = parsed._replace(path=candidate_path).geturl()
+        for host_variant in cdn_host_variants(candidate_url):
+            if host_variant not in unique_candidates:
+                unique_candidates.append(host_variant)
+    return unique_candidates
+
+def resolve_media_playlist(master_url: str, master_text: str):
+    """
+    从 master playlist 中选出可用的最高清晰度媒体播放列表。
+    返回 (媒体播放列表地址, 内容)，找不到时返回 (None, None)。
+    """
+    variants = parse_variants(master_url, master_text) or [master_url]
+    tried = set()
+
+    for variant_url in variants:
+        for candidate_url in unencrypted_candidates(variant_url):
+            if candidate_url in tried:
+                continue
+            tried.add(candidate_url)
+
+            try:
+                content = fetch_m3u8(candidate_url)
+            except Exception as e:
+                print(f"清晰度探测失败: {candidate_url} ({e})")
+                continue
+
+            if "#EXTINF" not in content:
+                continue
+            if "#EXT-X-KEY" in content and "METHOD=NONE" not in content:
+                print(f"跳过加密播放列表: {candidate_url}")
+                continue
+
+            return candidate_url, content
+
+    return None, None
+
 def get_video_info(video_guid):
     """
     获取视频信息
@@ -103,33 +236,57 @@ def get_video_info(video_guid):
         'uid': fingerprint,
         'wlan': ''
     }
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, headers=CCTV_HEADERS, timeout=30)
+    response.raise_for_status()
+
+    try:
+        info = response.json()
+    except ValueError:
+        print(f"视频信息接口返回异常内容: {response.text[:200]!r}")
+        raise
+
     with open("response.json", "w", encoding="utf-8") as f:
         f.write(response.text)
-    title = response.json()['title']
-    segments = response.json().get('segments', [])
-    tag = response.json()['tag']
-    target_url = response.json()['manifest']['hls_enc_url']
-    target_url_response = requests.get(target_url)
-    # print(target_url_response.text)
-    """
-    #EXTM3U
-    #EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=460800, RESOLUTION=480x270
-    /asp/hlsaudio/hls/450/0303000a/3/default/32209ab71a794674ab965ae7b6ff1d7e/450.m3u8
-    #EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=870400, RESOLUTION=640x360
-    /asp/hlsaudio/hls/850/0303000a/3/default/32209ab71a794674ab965ae7b6ff1d7e/850.m3u8
-    #EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=1228800, RESOLUTION=1280x720
-    /asp/hlsaudio/hls/1200/0303000a/3/default/32209ab71a794674ab965ae7b6ff1d7e/1200.m3u8
-    #EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=2048000, RESOLUTION=1280x720
-    /asp/hlsaudio/hls/2000/0303000a/3/default/32209ab71a794674ab965ae7b6ff1d7e/2000.m3u8
 
-    """    
-    # target_host = target_url.split('/')[2]
-    target_host = "hls.cntv.lxdns.com"
-    # print(target_host)
-    # https://hls.cntv.lxdns.com/asp/hls/450/0303000a/3/default/32209ab71a794674ab965ae7b6ff1d7e/450.m3u8
-    url = "https://" + target_host + target_url_response.text.split('\n')[2].replace("/enc","")
-    return url, title, segments, tag
+    title = info['title']
+    segments = info.get('segments', [])
+    tag = info['tag']
+
+    manifest = info.get('manifest') or {}
+    source_urls = []
+    for source_url in (
+        info.get('hls_url'),
+        manifest.get('hls_enc_url'),
+        manifest.get('hls_enc2_url'),
+        manifest.get('hls_h5e_url'),
+    ):
+        if not source_url:
+            continue
+        for candidate in cdn_host_variants(source_url):
+            if candidate not in source_urls:
+                source_urls.append(candidate)
+
+    if not source_urls:
+        raise RuntimeError("视频信息接口没有返回可用的m3u8地址")
+
+    errors = []
+    for master_url in source_urls:
+        print(f"尝试m3u8源: {master_url}")
+        try:
+            master_text = fetch_m3u8(master_url)
+        except Exception as e:
+            errors.append(f"{master_url}: {e}")
+            print(f"该m3u8源不可用: {e}")
+            continue
+
+        video_url, _ = resolve_media_playlist(master_url, master_text)
+        if video_url:
+            print(f"已选择播放地址: {video_url}")
+            return video_url, title, segments, tag
+
+        errors.append(f"{master_url}: 未找到可用的清晰度")
+
+    raise RuntimeError("无法获取可用的m3u8地址:\n" + "\n".join(errors))
 
 def get_sub_from_ai(path: str) -> bool:
     """从AI获取字幕
@@ -150,17 +307,19 @@ def get_sub_from_ai(path: str) -> bool:
         'Connection': 'keep-alive',
         'Authorization': f'Bearer {api_key}'
     }
-    audio_data = open(path, 'rb').read()
+    with open(path, 'rb') as audio_file:
+        audio_data = audio_file.read()
     base64_audio_data = base64.b64encode(audio_data).decode('utf-8')
     json_data = {
         'audio': base64_audio_data
     }
-    response = requests.post(url, headers=headers, json=json_data)
+    response = requests.post(url, headers=headers, json=json_data, timeout=600)
     if response.status_code == 200:
         # print(response.text)
         segments = response.json()['result']['segments']
         srt = convert_words_to_srt(segments)
-        with open(os.path.join("sub_output", path.split('/')[-1].split('.')[0] + ".srt"), 'w', encoding='utf-8') as f:
+        srt_name = os.path.splitext(os.path.basename(path))[0] + ".srt"
+        with open(os.path.join("sub_output", srt_name), 'w', encoding='utf-8') as f:
             f.write(srt)
         return True
     else:
@@ -234,6 +393,11 @@ if __name__ == "__main__":
     
     print("正在请求CCTV的API...")
     data = get_cctv_news_weekly()
+    if not data or not data.get('data', {}).get('list'):
+        print("未获取到视频列表，终止本次任务")
+        with open("status.txt", "w", encoding="utf-8") as f:
+            f.write("false")
+        sys.exit(1)
     latest_video_guid = data['data']['list'][0]['guid']
 
 
@@ -256,10 +420,10 @@ if __name__ == "__main__":
         f.write(f"---\n\n")
         f.write(f"视频内容如下：\n\n")
         for segment in segments:
-            f.write(f"- {segment["title"]}\n\n")
+            f.write(f"- {segment['title']}\n\n")
         f.write(f"---\n\n")
 
-    time_tag = title.split(' ')[1]
+    time_tag = title.split()[-1]
     with open("time.txt", "w", encoding="utf-8") as f:
         f.write(time_tag)
 
@@ -278,34 +442,41 @@ if __name__ == "__main__":
         filename=title
     )
     # success = True
-    if success:
-        print("下载成功！")
-        
-        # 分离音频
-        print("=" * 50)
-        print("开始分离音频...")
-        
-        try: 
-            video_path = f"downloads/{title}.mp4"
-            audio_path = f"downloads/{title}.mp3"
-            
-            if os.path.exists(video_path):
-                audio_success = extract_audio_from_video(video_path, audio_path)
-                if audio_success:
-                    print("🎉 音频分离完成！")
-                else:
-                    print("💥 音频分离失败！")
-            else:
-                print(f"错误: 视频文件 '{video_path}' 不存在")
-                
-        except ImportError:
-            print("警告: 无法导入 audio_extractor 模块")
-            print("请确保已安装 moviepy: pip install moviepy")
-        except Exception as e:
-            print(f"音频分离过程中出现错误: {e}")
+    if not success:
+        print("下载失败，终止本次任务")
+        with open("status.txt", "w", encoding="utf-8") as f:
+            f.write("false")
+        sys.exit(1)
+
+    print("下载成功！")
+
+    # 分离音频
+    print("=" * 50)
+    print("开始分离音频...")
+
+    video_path = os.path.join("downloads", f"{title}.mp4")
+    audio_path = os.path.join("downloads", f"{title}.mp3")
+    audio_success = False
+    try:
+        if os.path.exists(video_path):
+            audio_success = extract_audio_from_video(video_path, audio_path)
+        else:
+            print(f"错误: 视频文件 '{video_path}' 不存在")
+    except ImportError:
+        print("警告: 无法导入 audio_extractor 模块")
+        print("请确保已安装 moviepy: pip install moviepy")
+    except Exception as e:
+        print(f"音频分离过程中出现错误: {e}")
+
+    if not audio_success or not os.path.exists(audio_path):
+        print("音频分离失败，无法生成字幕")
+        with open("status.txt", "w", encoding="utf-8") as f:
+            f.write("false")
+        sys.exit(1)
+
+    print("🎉 音频分离完成！")
 
     # 生成字幕
-    # audio_path = "downloads/《新闻周刊》 20250802.mp3"
     print("=" * 50)
     print("开始生成字幕...")
     status = False
@@ -315,10 +486,18 @@ if __name__ == "__main__":
         if status:
             print("字幕生成完成！")
         else:
-            print("字幕生成失败！")
             total_try_times -= 1
-            print(f"正在重试... 剩余尝试次数: {total_try_times}")
-            time.sleep(300)
+            if total_try_times > 0:
+                print(f"字幕生成失败！正在重试... 剩余尝试次数: {total_try_times}")
+                time.sleep(300)
+            else:
+                print("字幕生成失败，已达到最大重试次数")
+
+    if not status:
+        with open("status.txt", "w", encoding="utf-8") as f:
+            f.write("false")
+        sys.exit(1)
+
     # 保存到passed.json
     passed['video_title'] = title
     write_passed_file(passed)
